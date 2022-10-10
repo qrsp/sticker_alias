@@ -49,16 +49,19 @@ Send me stciker to set alias.
 Use @stickers_alias_bot inline mode to search stickers on the fly.
 
 Example:
-@stickers_alias_bot [query] - Search sticker by alias.
+@stickers_alias_bot [query] - Search stickers by alias.
 @stickers_alias_bot [1 - 9] - Show stickers in the favorite [1 - 9].
-@stickers_alias_bot [1 - 9]i - Show stickers in the favorite [1 - 9] without cache result in the server. Useful when edit favorite, show correct result.
 @stickers_alias_bot % - Show trending stickers.
+@stickers_alias_bot [1 - 9] i - Show stickers in the favorite [1 - 9]. Results are returned from bot not from server by cache. Useful when edit favorite, show correct result.
+@stickers_alias_bot ,[query] - Search stickers by set alias.
+@stickers_alias_bot ,[query] i - Search stickers by set alias. Results are returned from bot not from server by cache.
 
 Command:
 /help - Show help message.
 /favorite add - Add stickers to favorite.
 /favorite delete - Delete stickers from favorite.
 /alias - Show all alias.
+/bulk - Update sticker set alias.
             """,
         disable_web_page_preview=True,
     )
@@ -120,13 +123,28 @@ def alias_command(update: Update, context: CallbackContext):
         return
 
     cursor = get_connection(context).cursor()
-    results = search_all_alias(cursor)
 
-    reply = ""
+    results = search_all_alias(cursor)
+    reply = "alias:\n"
     for alias in results:
         reply += f"{alias[0]}\n"
 
     update.message.reply_text(reply)
+
+    results = search_all_set_alias(cursor)
+    reply = "set_alias:\n"
+    for set_alias in results:
+        reply += f"{set_alias[0]}\n"
+
+    update.message.reply_text(reply)
+
+
+def bulk_command(update: Update, context: CallbackContext):
+    if not authorize(update.message.from_user.id, context):
+        return
+
+    context.chat_data["status"] = "Bulk update alias"
+    update.message.reply_text("Send a sticker to me.")
 
 
 def calculate_score(age, gravity=1.8):
@@ -208,7 +226,7 @@ def favorite_callback(update: Update, context: CallbackContext) -> None:
     context.chat_data["finish_message"].pin()
 
 
-def favorite_modify(update: Update, context: CallbackContext) -> None:
+def update_favorite(update: Update, context: CallbackContext) -> None:
     cursor: sqlite3.Cursor = get_connection(context).cursor()
 
     sticker: Sticker = update.message.sticker
@@ -225,7 +243,7 @@ def favorite_modify(update: Update, context: CallbackContext) -> None:
         except sqlite3.IntegrityError as e:
             if "FOREIGN KEY constraint failed" in e.args:
                 insert_or_update_sticker(
-                    cursor, sticker.file_unique_id, sticker.file_id, user_id, None
+                    cursor, sticker.file_unique_id, sticker.file_id, user_id, None, None
                 )
 
                 rowcount = insert_favorite(
@@ -283,6 +301,40 @@ def finish_callback(update: Update, context: CallbackContext) -> None:
     data.clear()
 
 
+# def flag_parser(query: str):
+#     flags = []
+#     if query.startswith("_"):
+#         _ = query.split(maxsplit=1)
+#         if len(_) == 2:
+#             flags_str, alias = _
+#         else:
+#             return [], ""
+
+#         for s in flags_str[1:]:
+#             if s.lower() == 'f':
+#                 flags.append("fresh")
+#             elif s.lower() == 's':
+#                 flags.append("set alias")
+#             else:
+#                 flags = []
+#                 alias = query
+#         return flags, alias
+#     else:
+#         return [], query
+
+
+def flag_parser(query: str):
+    flags = []
+    alias = query
+    if query.startswith("，") or query.startswith(","):
+        flags.append("set alias")
+        alias = alias[1:]
+    if query.endswith(" i"):
+        flags.append("fresh")
+        alias = alias[:-2]
+    return flags, alias
+
+
 def inlinequery(update: Update, context: CallbackContext) -> None:
     user_id = update.inline_query.from_user.id
     if not authorize(user_id, context):
@@ -291,21 +343,22 @@ def inlinequery(update: Update, context: CallbackContext) -> None:
     """Handle the inline query."""
     query = update.inline_query.query
 
-    if query == "":
+    flags, alias = flag_parser(query)
+
+    if alias == "":
         return
 
     cursor = get_connection(context).cursor()
 
-    match = re.match(r"^(\d)(i?)$", query)
-    cache_time = None
-    if match:
-        stickers = search_sticker_by_favortie(cursor, user_id, match.group(1))
-        if match.group(2):
-            cache_time = 0
-    elif query == "%":
+    if re.match(r"^(\d)$", alias):
+        stickers = search_sticker_by_favortie(cursor, user_id, int(alias))
+    elif alias == "%":
         stickers = search_trending_sticker(cursor, user_id)
     else:
-        stickers = search_sticker_by_alias(cursor, user_id, query)
+        if "set alias" in flags:
+            stickers = search_sticker_by_set_alias(cursor, user_id, alias)
+        else:
+            stickers = search_sticker_by_alias(cursor, user_id, alias)
 
     results = []
     if stickers:
@@ -319,8 +372,8 @@ def inlinequery(update: Update, context: CallbackContext) -> None:
     else:
         return
 
-    if cache_time:
-        update.inline_query.answer(results, cache_time=cache_time, auto_pagination=True)
+    if "fresh" in flags:
+        update.inline_query.answer(results, cache_time=0, auto_pagination=True)
     else:
         update.inline_query.answer(results, auto_pagination=True)
 
@@ -341,33 +394,54 @@ def text_decision(update: Update, context: CallbackContext):
     if not authorize(update.message.from_user.id, context):
         return
 
-    if "sticker" in context.chat_data:
-        set_alias_2(update, context)
+    if "sticker" in context.chat_data or "stickers" in context.chat_data:
+        update_alias_2(update, context)
+    else:
+        help_command(update, context)
 
 
 def sticker_decision(update: Update, context: CallbackContext):
     if not authorize(update.message.from_user.id, context):
         return
 
-    staus = context.chat_data.get("status")
-    if staus == "Add favorite" or staus == "Delete favorite":
-        favorite_modify(update, context)
+    status = context.chat_data.get("status")
+    if status == "Add favorite" or status == "Delete favorite":
+        update_favorite(update, context)
     else:
-        set_alias_1(update, context)
+        update_alias_1(update, context)
 
 
-def set_alias_1(update: Update, context: CallbackContext):
+def update_alias_1(update: Update, context: CallbackContext):
     cursor = get_connection(context).cursor()
+
     result = search_sticker_by_unique_id(cursor, update.message.sticker.file_unique_id)
-    if result:
-        update.message.reply_text(f"Alias is: {result[-1]}")
 
-    context.chat_data["sticker"] = update.message.sticker
+    if context.chat_data.get("status") == "Bulk update alias":
+        # Bulk
+        set_name = update.message.sticker.set_name
+        sticker_set = context.bot.get_sticker_set(set_name)
+        context.chat_data["stickers"] = sticker_set.stickers
 
-    context.chat_data["set_alias_1_placeholder"] = update.message.reply_text(
-        "New alias is?"
-    )
+        update.message.reply_text(f"Sticker set title: {sticker_set.title}")
 
+        if result and result[-1]:
+            update.message.reply_text(f"Set alias is: {result[-1]}")
+
+        context.chat_data["update_alias_placeholder"] = update.message.reply_text(
+            "New set alias is?"
+        )
+    else:
+        # Single
+        context.chat_data["sticker"] = update.message.sticker
+
+        if result and result[-2]:
+            update.message.reply_text(f"Alias is: {result[-2]}")
+
+        context.chat_data["update_alias_placeholder"] = update.message.reply_text(
+            "New alias is?"
+        )
+
+    # cancel button
     keyboard = []
     keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -383,24 +457,39 @@ def cancel_callback(update: Update, context: CallbackContext):
     query.answer()
     query.message.delete()
 
-    context.chat_data["set_alias_1_placeholder"].delete()
+    context.chat_data["update_alias_placeholder"].delete()
     context.chat_data.clear()
 
 
-def set_alias_2(update: Update, context: CallbackContext):
+def update_alias_2(update: Update, context: CallbackContext):
     conn = get_connection(context)
     cursor = conn.cursor()
 
-    sticker = context.chat_data["sticker"]
-
-    alias = update.message.text
-    insert_or_update_sticker(
-        cursor,
-        sticker.file_unique_id,
-        sticker.file_id,
-        update.message.from_user.id,
-        alias,
-    )
+    if context.chat_data.get("status") == "Bulk update alias":
+        # Bulk
+        stickers = context.chat_data["stickers"]
+        set_alias = update.message.text
+        for sticker in stickers:
+            insert_or_update_sticker(
+                cursor,
+                sticker.file_unique_id,
+                sticker.file_id,
+                update.message.from_user.id,
+                None,
+                set_alias
+            )
+    else:
+        # Single
+        sticker = context.chat_data["sticker"]
+        alias = update.message.text
+        insert_or_update_sticker(
+            cursor,
+            sticker.file_unique_id,
+            sticker.file_id,
+            update.message.from_user.id,
+            alias,
+            None
+        )
     conn.commit()
 
     context.chat_data["cancel_message"].delete()
@@ -437,7 +526,6 @@ def main() -> None:
         tz = timezone(config["TIME_ZONE"])
         update_time = update_time.replace(tzinfo=tz)
     job_queue.run_daily(callback_update_trending, update_time)
-    job_queue.run_once(callback_update_trending, 0)
 
     # Get the dispatcher to register handlers
     dispatcher = updater.dispatcher
@@ -446,6 +534,7 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("help", help_command))
     dispatcher.add_handler(CommandHandler("favorite", favorite_command))
     dispatcher.add_handler(CommandHandler("alias", alias_command))
+    dispatcher.add_handler(CommandHandler("bulk", bulk_command))
 
     dispatcher.add_handler(CallbackQueryHandler(cancel_callback, pattern=r"^cancel$"))
     dispatcher.add_handler(
@@ -485,6 +574,7 @@ def initial_DB(cursor):
                 file_id TEXT NOT NULL,
                 user_id INTEGER NOT NULL,
                 alias TEXT,
+                set_alias TEXT,
                 FOREIGN KEY (user_id)
                     REFERENCES user (user_id)
                         ON UPDATE CASCADE
@@ -560,11 +650,17 @@ def select_all_user_id(cursor):
 
 
 # TABLE sticker
-def insert_or_update_sticker(cursor, file_unique_id, file_id, user_id, alias):
-    cursor.execute(
-        "INSERT INTO sticker VALUES(?,?,?,?) ON CONFLICT(file_unique_id) DO UPDATE SET user_id=?, alias=?",
-        (file_unique_id, file_id, user_id, alias, user_id, alias),
-    )
+def insert_or_update_sticker(cursor, file_unique_id, file_id, user_id, alias, set_alias):
+    query = "INSERT INTO sticker VALUES(?,?,?,?,?) ON CONFLICT(file_unique_id) DO UPDATE SET user_id=?"
+    data = (file_unique_id, file_id, user_id, alias, set_alias, user_id)
+    if alias is not None:
+        query += ", alias=?"
+        data += (alias,)
+    elif set_alias is not None:
+        query += ", set_alias=?"
+        data += (set_alias,)
+
+    cursor.execute(query, data)
 
 
 def search_sticker_by_unique_id(cursor, file_unique_id):
@@ -584,6 +680,23 @@ def search_sticker_by_alias(cursor, user_id, alias):
         (
             user_id,
             f"%{alias}%",
+        ),
+    )
+    return cursor.fetchall()
+
+
+def search_sticker_by_set_alias(cursor, user_id, set_alias):
+    cursor.execute(
+        """
+            SELECT sticker.file_unique_id, sticker.file_id FROM sticker
+            LEFT OUTER JOIN trending
+            ON trending.user_id=? AND sticker.file_unique_id = trending.file_unique_id
+            WHERE set_alias like ?
+            ORDER BY score DESC
+            """,
+        (
+            user_id,
+            f"%{set_alias}%",
         ),
     )
     return cursor.fetchall()
@@ -610,6 +723,14 @@ def search_all_alias(cursor):
     return cursor.fetchall()
 
 
+def search_all_set_alias(cursor):
+    cursor.execute(
+        "SELECT DISTINCT(set_alias) FROM sticker WHERE set_alias IS NOT NULL ORDER BY set_alias"
+    )
+    return cursor.fetchall()
+
+
+# TABLE favorite
 def insert_favorite(cursor, user_id, file_unique_id, group_no):
     cursor.execute(
         " INSERT INTO favorite VALUES(?,?,?)", (user_id, file_unique_id, group_no)
