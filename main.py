@@ -356,7 +356,7 @@ def inlinequery(update: Update, context: CallbackContext) -> None:
         stickers = search_trending_sticker(cursor, user_id)
     else:
         if "set alias" in flags:
-            stickers = search_sticker_by_set_alias(cursor, user_id, alias)
+            stickers = search_sticker_by_set_alias(cursor, alias)
         else:
             stickers = search_sticker_by_alias(cursor, user_id, alias)
 
@@ -414,6 +414,7 @@ def sticker_decision(update: Update, context: CallbackContext):
 def update_alias_1(update: Update, context: CallbackContext):
     cursor = get_connection(context).cursor()
 
+    logger.debug(f"file_unique_id: {update.message.sticker.file_unique_id}")
     result = search_sticker_by_unique_id(cursor, update.message.sticker.file_unique_id)
 
     if context.chat_data.get("status") == "Bulk update alias":
@@ -476,7 +477,7 @@ def update_alias_2(update: Update, context: CallbackContext):
                 sticker.file_id,
                 update.message.from_user.id,
                 None,
-                set_alias
+                set_alias,
             )
     else:
         # Single
@@ -488,7 +489,7 @@ def update_alias_2(update: Update, context: CallbackContext):
             sticker.file_id,
             update.message.from_user.id,
             alias,
-            None
+            None,
         )
     conn.commit()
 
@@ -650,7 +651,9 @@ def select_all_user_id(cursor):
 
 
 # TABLE sticker
-def insert_or_update_sticker(cursor, file_unique_id, file_id, user_id, alias, set_alias):
+def insert_or_update_sticker(
+    cursor, file_unique_id, file_id, user_id, alias, set_alias
+):
     query = "INSERT INTO sticker VALUES(?,?,?,?,?) ON CONFLICT(file_unique_id) DO UPDATE SET user_id=?"
     data = (file_unique_id, file_id, user_id, alias, set_alias, user_id)
     if alias is not None:
@@ -685,19 +688,13 @@ def search_sticker_by_alias(cursor, user_id, alias):
     return cursor.fetchall()
 
 
-def search_sticker_by_set_alias(cursor, user_id, set_alias):
+def search_sticker_by_set_alias(cursor, set_alias):
     cursor.execute(
         """
             SELECT sticker.file_unique_id, sticker.file_id FROM sticker
-            LEFT OUTER JOIN trending
-            ON trending.user_id=? AND sticker.file_unique_id = trending.file_unique_id
             WHERE set_alias like ?
-            ORDER BY score DESC
             """,
-        (
-            user_id,
-            f"%{set_alias}%",
-        ),
+        (f"%{set_alias}%",),
     )
     return cursor.fetchall()
 
