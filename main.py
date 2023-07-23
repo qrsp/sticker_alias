@@ -10,9 +10,10 @@ from pytz import timezone
 from telegram import (CallbackQuery, InlineKeyboardButton,
                       InlineKeyboardMarkup, InlineQueryResultCachedSticker,
                       Sticker, Update)
-from telegram.ext import (CallbackContext, CallbackQueryHandler,
-                          ChosenInlineResultHandler, CommandHandler, Filters,
-                          InlineQueryHandler, MessageHandler, Updater)
+from telegram.ext import (Application, CallbackContext, CallbackQueryHandler,
+                          ChosenInlineResultHandler, CommandHandler,
+                          ContextTypes, InlineQueryHandler, MessageHandler,
+                          filters)
 
 # Enable logging
 logging.basicConfig(
@@ -31,7 +32,7 @@ API_TOKEN: str = config["API_TOKEN"]
 DB_FILE: str = config["DB_FILE"]
 
 
-def get_connection(context) -> sqlite3.Connection:
+def get_connection(context: ContextTypes.DEFAULT_TYPE) -> sqlite3.Connection:
     connection = context.bot_data.get("connection")
     if not connection:
         connection = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
@@ -41,9 +42,9 @@ def get_connection(context) -> sqlite3.Connection:
     return connection
 
 
-def help_command(update: Update, context: CallbackContext) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
-    update.message.reply_html(
+    await update.message.reply_html(
         """
 Send me stciker to set alias.
 Use @stickers_alias_bot inline mode to search stickers on the fly.
@@ -67,19 +68,19 @@ Command:
     )
 
 
-def export_command(update: Update, context: CallbackContext) -> None:
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorize(update.message.from_user.id, context):
         return
 
-    update.message.reply_document(open("sticker.db", "rb"))
+    await update.message.reply_document(open("sticker.db", "rb"))
 
 
-def favorite_command(update: Update, context: CallbackContext) -> None:
+async def favorite_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorize(update.message.from_user.id, context):
         return
 
     if not context.args or len(context.args) == 0:
-        update.message.reply_text(
+        await update.message.reply_text(
             "/favorite add - Add stickers to favorite.\n/favorite delete - Delete stickers from favorite."
         )
         return
@@ -115,10 +116,10 @@ def favorite_command(update: Update, context: CallbackContext) -> None:
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    update.message.reply_text("Which favorite:", reply_markup=reply_markup)
+    await update.message.reply_text("Which favorite:", reply_markup=reply_markup)
 
 
-def alias_command(update: Update, context: CallbackContext):
+async def alias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorize(update.message.from_user.id, context):
         return
 
@@ -129,29 +130,29 @@ def alias_command(update: Update, context: CallbackContext):
     for alias in results:
         reply += f"{alias[0]}\n"
 
-    update.message.reply_text(reply)
+    await update.message.reply_text(reply)
 
     results = search_all_set_alias(cursor)
     reply = "set_alias:\n"
     for set_alias in results:
         reply += f"{set_alias[0]}\n"
 
-    update.message.reply_text(reply)
+    await update.message.reply_text(reply)
 
 
-def bulk_command(update: Update, context: CallbackContext):
+async def bulk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorize(update.message.from_user.id, context):
         return
 
     context.chat_data["status"] = "Bulk update alias"
-    update.message.reply_text("Send a sticker to me.")
+    await update.message.reply_text("Send a sticker to me.")
 
 
 def calculate_score(age, gravity=1.8):
     return 1 / pow((age + 2), gravity)
 
 
-def callback_update_trending(context: CallbackContext):
+async def callback_update_trending(context: ContextTypes.DEFAULT_TYPE):
     connection = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
     connection.execute("PRAGMA foreign_keys = ON")
     cursor = connection.cursor()
@@ -159,7 +160,7 @@ def callback_update_trending(context: CallbackContext):
     if not context.bot_data.get("admin"):
         context.bot_data["admin"] = select_admin_id(cursor)[0]
 
-    context.bot.send_message(
+    await context.bot.send_message(
         context.bot_data.get("admin"), "System: Update trending..."
     )
 
@@ -191,17 +192,19 @@ def callback_update_trending(context: CallbackContext):
     connection.commit()
     connection.close()
 
-    context.bot.send_message(context.bot_data.get("admin"), "System: Trending updated.")
+    await context.bot.send_message(
+        context.bot_data.get("admin"), "System: Trending updated."
+    )
 
 
-def favorite_callback(update: Update, context: CallbackContext) -> None:
+async def favorite_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cursor: sqlite3.Cursor = get_connection(context).cursor()
 
     query: CallbackQuery = update.callback_query
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
-    query.answer()
-    query.message.delete()
+    await query.answer()
+    await query.message.delete()
 
     _, group_no, user_id_str = query.data.split()
     context.chat_data["group_no"] = int(group_no)
@@ -212,21 +215,21 @@ def favorite_callback(update: Update, context: CallbackContext) -> None:
     context.chat_data["number_of_stickers"] = number_of_stickers
 
     if context.chat_data["status"] == "Add favorite":
-        query.message.reply_text(f"Add to favorite {group_no} ...")
+        await query.message.reply_text(f"Add to favorite {group_no} ...")
     elif context.chat_data["status"] == "Delete favorite":
-        query.message.reply_text(f"Delete from favorite {group_no} ...")
+        await query.message.reply_text(f"Delete from favorite {group_no} ...")
 
     keyboard = []
     keyboard.append([InlineKeyboardButton("Finish", callback_data="finish")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    context.chat_data["finish_message"] = query.message.reply_text(
+    context.chat_data["finish_message"] = await query.message.reply_text(
         f"Favorite {group_no}: {number_of_stickers}", reply_markup=reply_markup
     )
 
-    context.chat_data["finish_message"].pin()
+    await context.chat_data["finish_message"].pin()
 
 
-def update_favorite(update: Update, context: CallbackContext) -> None:
+async def update_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cursor: sqlite3.Cursor = get_connection(context).cursor()
 
     sticker: Sticker = update.message.sticker
@@ -261,9 +264,9 @@ def update_favorite(update: Update, context: CallbackContext) -> None:
         if rowcount == 1:
             data["number_of_stickers"] = data["number_of_stickers"] + 1
         elif rowcount == 0:
-            update.message.reply_text("The sticker has already in this favorite.")
+            await update.message.reply_text("The sticker has already in this favorite.")
         elif rowcount == -1:
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"The sticker has already in favorite {conflict_group_no}."
             )
 
@@ -275,52 +278,30 @@ def update_favorite(update: Update, context: CallbackContext) -> None:
         if rowcount == 1:
             data["number_of_stickers"] = data["number_of_stickers"] - 1
         elif rowcount == 0:
-            update.message.reply_text("The sticker is not in this favorite.")
+            await update.message.reply_text("The sticker is not in this favorite.")
 
     if rowcount == 1:
-        data["finish_message"].edit_text(
+        await data["finish_message"].edit_text(
             f"Favorite {data['group_no']}: {data['number_of_stickers']}",
             reply_markup=data["finish_message"].reply_markup,
         )
 
 
-def finish_callback(update: Update, context: CallbackContext) -> None:
+async def finish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query: CallbackQuery = update.callback_query
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
-    query.answer()
-    query.message.delete()
+    await query.answer()
+    await query.message.delete()
 
     conn: sqlite3.Connection = get_connection(context)
     conn.commit()
 
     data: dict = context.chat_data
-    query.message.reply_text(
+    await query.message.reply_text(
         f"Succeeded. Now Favorite {data['group_no']} has {data['number_of_stickers']} stickers."
     )
     data.clear()
-
-
-# def flag_parser(query: str):
-#     flags = []
-#     if query.startswith("_"):
-#         _ = query.split(maxsplit=1)
-#         if len(_) == 2:
-#             flags_str, alias = _
-#         else:
-#             return [], ""
-
-#         for s in flags_str[1:]:
-#             if s.lower() == 'f':
-#                 flags.append("fresh")
-#             elif s.lower() == 's':
-#                 flags.append("set alias")
-#             else:
-#                 flags = []
-#                 alias = query
-#         return flags, alias
-#     else:
-#         return [], query
 
 
 def flag_parser(query: str):
@@ -335,7 +316,7 @@ def flag_parser(query: str):
     return flags, alias
 
 
-def inlinequery(update: Update, context: CallbackContext) -> None:
+async def inlinequery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.inline_query.from_user.id
     if not authorize(user_id, context):
         return
@@ -343,12 +324,27 @@ def inlinequery(update: Update, context: CallbackContext) -> None:
     """Handle the inline query."""
     query = update.inline_query.query
 
+    # logger.info(f"query: {query}")
     flags, alias = flag_parser(query)
+    cursor = get_connection(context).cursor()
 
     if alias == "":
+        # Fix first response would not display correctly.
+        last_sticker = context.user_data.get("last_results")
+        if last_sticker:
+            await update.inline_query.answer(last_sticker, auto_pagination=True)
+        else:
+            stickers = search_trending_sticker(cursor, user_id)
+            if stickers:
+                file_unique_id, file_id = stickers[0]
+                result = [
+                    InlineQueryResultCachedSticker(
+                        id=file_unique_id,
+                        sticker_file_id=file_id,
+                    )
+                ]
+                await update.inline_query.answer(result)
         return
-
-    cursor = get_connection(context).cursor()
 
     if re.match(r"^(\d)$", alias):
         stickers = search_sticker_by_favortie(cursor, user_id, int(alias))
@@ -372,13 +368,15 @@ def inlinequery(update: Update, context: CallbackContext) -> None:
     else:
         return
 
+    # logger.info(f"results: {results}")
+    context.user_data["last_results"] = results
     if "fresh" in flags:
-        update.inline_query.answer(results, cache_time=0, auto_pagination=True)
+        await update.inline_query.answer(results, cache_time=0, auto_pagination=True)
     else:
-        update.inline_query.answer(results, auto_pagination=True)
+        await update.inline_query.answer(results, auto_pagination=True)
 
 
-def chosen_inline_result(update: Update, context: CallbackContext):
+async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_connection(context)
     cursor = conn.cursor()
     insert_chosen(
@@ -390,28 +388,28 @@ def chosen_inline_result(update: Update, context: CallbackContext):
     conn.commit()
 
 
-def text_decision(update: Update, context: CallbackContext):
+async def text_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorize(update.message.from_user.id, context):
         return
 
     if "sticker" in context.chat_data or "stickers" in context.chat_data:
-        update_alias_2(update, context)
+        await update_alias_2(update, context)
     else:
-        help_command(update, context)
+        await help_command(update, context)
 
 
-def sticker_decision(update: Update, context: CallbackContext):
+async def sticker_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorize(update.message.from_user.id, context):
         return
 
     status = context.chat_data.get("status")
     if status == "Add favorite" or status == "Delete favorite":
-        update_favorite(update, context)
+        await update_favorite(update, context)
     else:
-        update_alias_1(update, context)
+        await update_alias_1(update, context)
 
 
-def update_alias_1(update: Update, context: CallbackContext):
+async def update_alias_1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor = get_connection(context).cursor()
 
     logger.debug(f"file_unique_id: {update.message.sticker.file_unique_id}")
@@ -420,15 +418,15 @@ def update_alias_1(update: Update, context: CallbackContext):
     if context.chat_data.get("status") == "Bulk update alias":
         # Bulk
         set_name = update.message.sticker.set_name
-        sticker_set = context.bot.get_sticker_set(set_name)
+        sticker_set = await context.bot.get_sticker_set(set_name)
         context.chat_data["stickers"] = sticker_set.stickers
 
-        update.message.reply_text(f"Sticker set title: {sticker_set.title}")
+        await update.message.reply_text(f"Sticker set title: {sticker_set.title}")
 
         if result and result[-1]:
-            update.message.reply_text(f"Set alias is: {result[-1]}")
+            await update.message.reply_text(f"Set alias is: {result[-1]}")
 
-        context.chat_data["update_alias_placeholder"] = update.message.reply_text(
+        context.chat_data["update_alias_placeholder"] = await update.message.reply_text(
             "New set alias is?"
         )
     else:
@@ -436,9 +434,9 @@ def update_alias_1(update: Update, context: CallbackContext):
         context.chat_data["sticker"] = update.message.sticker
 
         if result and result[-2]:
-            update.message.reply_text(f"Alias is: {result[-2]}")
+            await update.message.reply_text(f"Alias is: {result[-2]}")
 
-        context.chat_data["update_alias_placeholder"] = update.message.reply_text(
+        context.chat_data["update_alias_placeholder"] = await update.message.reply_text(
             "New alias is?"
         )
 
@@ -446,23 +444,23 @@ def update_alias_1(update: Update, context: CallbackContext):
     keyboard = []
     keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    context.chat_data["cancel_message"] = update.message.reply_text(
+    context.chat_data["cancel_message"] = await update.message.reply_text(
         "Cancel this action?", reply_markup=reply_markup
     )
 
 
-def cancel_callback(update: Update, context: CallbackContext):
+async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
-    query.answer()
-    query.message.delete()
+    await query.answer()
+    await query.message.delete()
 
-    context.chat_data["update_alias_placeholder"].delete()
+    await context.chat_data["update_alias_placeholder"].delete()
     context.chat_data.clear()
 
 
-def update_alias_2(update: Update, context: CallbackContext):
+async def update_alias_2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_connection(context)
     cursor = conn.cursor()
 
@@ -493,10 +491,10 @@ def update_alias_2(update: Update, context: CallbackContext):
         )
     conn.commit()
 
-    context.chat_data["cancel_message"].delete()
+    await context.chat_data["cancel_message"].delete()
 
     context.chat_data.clear()
-    update.message.reply_text("Succeeded.")
+    await update.message.reply_text("Succeeded.")
 
 
 def authorize(user_id, context: CallbackContext):
@@ -516,7 +514,7 @@ def authorize(user_id, context: CallbackContext):
 def main() -> None:
     """Run the bot."""
     # Create the Updater and pass it your bot's token.
-    updater = Updater(API_TOKEN)
+    updater = Application.builder().token(API_TOKEN).build()
 
     job_queue = updater.job_queue
     if config["UPDATE_TIME"]:
@@ -528,32 +526,33 @@ def main() -> None:
         update_time = update_time.replace(tzinfo=tz)
     job_queue.run_daily(callback_update_trending, update_time)
 
-    # Get the dispatcher to register handlers
-    dispatcher = updater.dispatcher
+    # Get the application to register handlers
+    # application = updater.application
+    application = updater
 
-    dispatcher.add_handler(CommandHandler("start", help_command))
-    dispatcher.add_handler(CommandHandler("help", help_command))
-    dispatcher.add_handler(CommandHandler("favorite", favorite_command))
-    dispatcher.add_handler(CommandHandler("alias", alias_command))
-    dispatcher.add_handler(CommandHandler("bulk", bulk_command))
+    application.add_handler(CommandHandler("start", help_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("favorite", favorite_command))
+    application.add_handler(CommandHandler("alias", alias_command))
+    application.add_handler(CommandHandler("bulk", bulk_command))
 
-    dispatcher.add_handler(CallbackQueryHandler(cancel_callback, pattern=r"^cancel$"))
-    dispatcher.add_handler(
+    application.add_handler(CallbackQueryHandler(cancel_callback, pattern=r"^cancel$"))
+    application.add_handler(
         CallbackQueryHandler(favorite_callback, pattern=r"^favorite_group \d+ \d+$")
     )
-    dispatcher.add_handler(CallbackQueryHandler(finish_callback, pattern=r"^finish$"))
+    application.add_handler(CallbackQueryHandler(finish_callback, pattern=r"^finish$"))
 
-    dispatcher.add_handler(InlineQueryHandler(inlinequery))
-    dispatcher.add_handler(ChosenInlineResultHandler(chosen_inline_result))
+    application.add_handler(InlineQueryHandler(inlinequery))
+    application.add_handler(ChosenInlineResultHandler(chosen_inline_result))
 
     # noncommand
-    dispatcher.add_handler(
-        MessageHandler(Filters.text & ~Filters.command, text_decision)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_decision)
     )
-    dispatcher.add_handler(MessageHandler(Filters.sticker, sticker_decision))
+    application.add_handler(MessageHandler(filters.Sticker.ALL, sticker_decision))
 
     # Start the Bot
-    updater.start_polling()
+    application.run_polling()
 
     # Block until the user presses Ctrl-C or the process receives SIGINT,
     # SIGTERM or SIGABRT.
